@@ -73,21 +73,35 @@ jobs:
           sudo mv copa /usr/local/bin/
           copa --version
 
-      - name: Install Buildctl
+      - name: Install Buildkit (buildkitd + buildctl)
         run: |
           BUILDKIT_VERSION="0.13.2"
           curl -L -o buildkit.tar.gz \
             "https://github.com/moby/buildkit/releases/download/v${BUILDKIT_VERSION}/buildkit-v${BUILDKIT_VERSION}.linux-amd64.tar.gz"
           tar -xzf buildkit.tar.gz -C /tmp
+          sudo mv /tmp/bin/buildkitd /usr/local/bin/
           sudo mv /tmp/bin/buildctl /usr/local/bin/
+          buildkitd --version
           buildctl --version
 
       - name: Run Copa to patch image
         run: |
-          # 在后台启动 buildkitd
-          sudo buildkitd &
+          # 创建 buildkitd 运行目录
+          sudo mkdir -p /run/buildkit
+
+          # 在后台启动 buildkitd（指定 sock 路径）
+          sudo buildkitd --addr unix:///run/buildkit/buildkitd.sock &
           BUILDKIT_PID=$!
-          sleep 5
+
+          # 等待 buildkitd sock 就绪（最多 30 秒）
+          for i in {1..30}; do
+            if [ -S /run/buildkit/buildkitd.sock ]; then
+              echo "buildkitd is ready"
+              break
+            fi
+            echo "Waiting for buildkitd... ($i/30)"
+            sleep 1
+          done
 
           # 使用 Copa 修补基础镜像漏洞
           sudo copa patch \
