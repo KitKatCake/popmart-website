@@ -104,10 +104,12 @@ jobs:
           done
 
           # 使用 Copa 修补基础镜像漏洞
+          # --image-store local 让 Copa 从本地 Docker daemon 读取镜像（而非从 registry 拉取）
           sudo copa patch \
             -i popmart-web:latest \
             -r trivy-report.json \
             -t popmart-web:latest-patched \
+            --image-store local \
             --addr unix:///run/buildkit/buildkitd.sock
 
           # 停止 buildkitd
