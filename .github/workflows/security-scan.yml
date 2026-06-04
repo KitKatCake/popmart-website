@@ -1,0 +1,127 @@
+name: Trivy Security Scan & Auto Repair
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  schedule:
+    - cron: '0 0 * * 1' # 每周一自动定时扫描
+
+permissions:
+  contents: write
+  security-events: write # 必须：允许将漏洞报告写入 GitHub 安全面板
+  packages: write
+
+jobs:
+  trivy-scan-and-repair:
+    name: Security Workflow
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # =========================================================
+      # 步骤 1：构建 Docker 镜像
+      # =========================================================
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build local Docker image
+        run: |
+          docker build -t popmart-web:latest .
+
+      # =========================================================
+      # 步骤 2：Trivy 扫描并导出到 GitHub 安全面板
+      # =========================================================
+      - name: Run Trivy vulnerability scanner (SARIF)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'popmart-web:latest'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      # =========================================================
+      # 步骤 3：生成 JSON 报告供 Copa 修复 OS 层漏洞
+      # =========================================================
+      - name: Generate JSON report for Copa repair
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'popmart-web:latest'
+          format: 'json'
+          output: 'trivy-report.json'
+          vuln-type: 'os'
+          severity: 'CRITICAL,HIGH'
+
+      # =========================================================
+      # 步骤 4：使用微软 Copacetic (Copa) 自动修补镜像
+      # =========================================================
+      - name: Install Copa
+        run: |
+          COPA_VERSION="0.6.0"
+          curl -L -o copa.tar.gz \
+            "https://github.com/project-copacetic/copacetic/releases/download/v${COPA_VERSION}/copa_${COPA_VERSION}_linux_amd64.tar.gz"
+          tar -xzf copa.tar.gz
+          chmod +x copa
+          sudo mv copa /usr/local/bin/
+          copa --version
+
+      - name: Install Buildctl
+        run: |
+          BUILDKIT_VERSION="0.13.2"
+          curl -L -o buildkit.tar.gz \
+            "https://github.com/moby/buildkit/releases/download/v${BUILDKIT_VERSION}/buildkit-v${BUILDKIT_VERSION}.linux-amd64.tar.gz"
+          tar -xzf buildkit.tar.gz -C /tmp
+          sudo mv /tmp/bin/buildctl /usr/local/bin/
+          buildctl --version
+
+      - name: Run Copa to patch image
+        run: |
+          # 在后台启动 buildkitd
+          sudo buildkitd &
+          BUILDKIT_PID=$!
+          sleep 5
+
+          # 使用 Copa 修补基础镜像漏洞
+          sudo copa patch \
+            -i popmart-web:latest \
+            -r trivy-report.json \
+            -t popmart-web:latest-patched \
+            --addr unix:///run/buildkit/buildkitd.sock
+
+          # 停止 buildkitd
+          sudo kill $BUILDKIT_PID || true
+
+      # =========================================================
+      # 步骤 5：验证修补效果
+      # =========================================================
+      - name: Rescan patched image to verify fixes
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'popmart-web:latest-patched'
+          format: 'table'
+          vuln-type: 'os'
+          severity: 'CRITICAL,HIGH'
+
+      # =========================================================
+      # 步骤 6：上传修补后的镜像到 Harbor（可选）
+      # =========================================================
+      - name: Log in to Harbor Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.HARBOR_REGISTRY }}
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
+      - name: Push patched image to Harbor
+        run: |
+          docker tag popmart-web:latest-patched \
+            ${{ secrets.HARBOR_REGISTRY }}/public/webdev:latest-patched
+          docker push ${{ secrets.HARBOR_REGISTRY }}/public/webdev:latest-patched
