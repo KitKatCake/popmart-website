@@ -103,9 +103,10 @@ jobs:
           copa patch \
             --image "${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}" \
             --report trivy-report.json \
-            --tag "${{ env.PATCHED_TAG }}" \
-            --local
-
+            --tag "${{ env.PATCHED_TAG }}" 
+            
+            
+            
       # -----------------------
       # 6. Verify patched image
       # -----------------------
