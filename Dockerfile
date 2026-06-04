@@ -10,6 +10,9 @@ RUN npm ci
 # Copy source code
 COPY . .
 
+# Ensure public directory exists (Git doesn't track empty dirs)
+RUN mkdir -p public
+
 # Build the application
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
