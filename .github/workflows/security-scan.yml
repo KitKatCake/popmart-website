@@ -15,8 +15,7 @@ permissions:
 
 env:
   REGISTRY: harbor.xingzhan.cloud:9443
-  # 💡 修改点 1：把镜像全称和路径直接定义在 env 中，让所有工具链统一路径
-  FULL_IMAGE_NAME: harbor.xingzhan.cloud:9443/public/webdev
+  IMAGE_NAME: popmart-web
   IMAGE_TAG: latest
   PATCHED_TAG: latest-patched
 
@@ -29,38 +28,27 @@ jobs:
         uses: actions/checkout@v4
 
       ##########################################################
-      # 1. 登录 Harbor（💡 挪到最前面，确保后续所有步骤均可正常拉取/推送）
-      ##########################################################
-      - name: Login Harbor
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.HARBOR_USERNAME }}
-          password: ${{ secrets.HARBOR_PASSWORD }}
-
-      ##########################################################
-      # 2. 启动并配置本地 Docker Buildx 环境
+      # 1. 初始化并构建本地 Docker 镜像
       ##########################################################
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 💡 修改点 2：使用带域名的全称构建，并同时 load（本地测试用）和 push（让隔离的 Copa 能够拉到）
-      - name: Build and Push base image
+      # 使用 load: true 将构建好的本地镜像直接加载回当前宿主机的 Docker Daemon 中
+      - name: Build local image
         uses: docker/build-push-action@v6
         with:
           context: .
           load: true
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ env.FULL_IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          tags: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
 
       ##########################################################
-      # 3. 运行 Trivy 扫描
+      # 2. 运行 Trivy 漏洞扫描（双格式输出）
       ##########################################################
+      # 格式 A：SARIF 格式，用于同步到 GitHub 代码安全扫描页（Code Scanning Alerts）
       - name: Run Trivy SARIF Scan
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: '${{ env.FULL_IMAGE_NAME }}:${{ env.IMAGE_TAG }}'
+          image-ref: '${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}'
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH,MEDIUM
@@ -71,42 +59,63 @@ jobs:
         with:
           sarif_file: trivy-results.sarif
 
+      # 格式 B：JSON 格式，专供本地 Copa 读取并用作修补指令依据
       - name: Generate Trivy JSON Report
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: '${{ env.FULL_IMAGE_NAME }}:${{ env.IMAGE_TAG }}'
+          image-ref: '${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}'
           format: json
           output: trivy-report.json
           vuln-type: os
           severity: CRITICAL,HIGH
 
       ##########################################################
-      # 4. 运行 Copa 修补（💡 传入带私有域名的完整镜像名称）
+      # 3. 宿主机就地运行 Copa 修复镜像（突破隔离壁垒的关键点）
       ##########################################################
-      - name: Patch Image Using Copa
-        uses: project-copacetic/copa-action@v1
-        with:
-          image: ${{ env.FULL_IMAGE_NAME }}:${{ env.IMAGE_TAG }}
-          image-report: trivy-report.json
-          patched-tag: ${{ env.PATCHED_TAG }}
-          copa-version: 0.8.0
-          timeout: 5m
+      - name: Install Copa & Patch Locally
+        run: |
+          # 1. 自动下载并就地解压 Copa 官方指定二进制版本
+          COPA_VERSION="0.8.0"
+          curl -L -o copa.tar.gz "https://github.com{COPA_VERSION}/copa_${COPA_VERSION}_linux_amd64.tar.gz"
+          tar -xzf copa.tar.gz
+          sudo chmod +x copa
+          sudo mv copa /usr/local/bin/
+
+          # 2. 使用 --image-store local 直接接管宿主机的本地 Docker 镜像
+          # 此时 Copa 直接与本地 /var/run/docker.sock 交互，绝不触发任何远端仓库的 Auth 鉴权
+          copa patch \
+            -i ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} \
+            -r trivy-report.json \
+            -t ${{ env.PATCHED_TAG }} \
+            --image-store local
 
       ##########################################################
-      # 5. 校验并二次扫描修补后的镜像
+      # 4. 对修补后的最终镜像执行二次验证扫描
       ##########################################################
       - name: Re-Scan Patched Image
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: '${{ env.FULL_IMAGE_NAME }}:${{ env.PATCHED_TAG }}'
+          image-ref: '${{ env.IMAGE_NAME }}:${{ env.PATCHED_TAG }}'
           format: table
           vuln-type: os
           severity: CRITICAL,HIGH
 
       ##########################################################
-      # 6. 推送修复后的成品镜像（💡 此时 Copa 已在本地生成了新 Tag，直接 Push）
+      # 5. 推送修补完好、验证通过的镜像至私有 Harbor 仓库
       ##########################################################
+      - name: Login Harbor
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
       - name: Push Patched Image
         if: github.event_name != 'pull_request'
         run: |
-          docker push ${{ env.FULL_IMAGE_NAME }}:${{ env.PATCHED_TAG }}
+          docker tag \
+            ${{ env.IMAGE_NAME }}:${{ env.PATCHED_TAG }} \
+            ${{ env.REGISTRY }}/public/webdev:${{ env.PATCHED_TAG }}
+          docker push \
+            ${{ env.REGISTRY }}/public/webdev:${{ env.PATCHED_TAG }}
