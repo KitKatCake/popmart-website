@@ -114,11 +114,14 @@ jobs:
 
       - name: Patch Image Using Copa
         run: |
-          sudo mkdir -p /run/buildkit
+          # 使用当前用户可写的目录
+          export BUILDKIT_DIR="$HOME/buildkit"
+          mkdir -p "$BUILDKIT_DIR"
 
-          sudo buildkitd \
+          # 启动 buildkitd（不使用 sudo，避免 sock 权限问题）
+          buildkitd \
             --oci-worker-no-process-sandbox \
-            --addr unix:///run/buildkit/buildkitd.sock \
+            --addr unix://"$BUILDKIT_DIR"/buildkitd.sock \
             > buildkit.log 2>&1 &
 
           BUILDKIT_PID=$!
@@ -126,7 +129,7 @@ jobs:
 
           for i in {1..60}; do
             if buildctl \
-              --addr unix:///run/buildkit/buildkitd.sock \
+              --addr unix://"$BUILDKIT_DIR"/buildkitd.sock \
               debug workers >/dev/null 2>&1; then
               echo "BuildKit Ready"
               break
@@ -134,16 +137,16 @@ jobs:
             sleep 1
           done
 
-          buildctl --addr unix:///run/buildkit/buildkitd.sock debug workers
+          buildctl --addr unix://"$BUILDKIT_DIR"/buildkitd.sock debug workers
 
           copa patch \
             -i ${IMAGE_NAME}:${IMAGE_TAG} \
             -r trivy-report.json \
             -t ${IMAGE_NAME}:${PATCHED_TAG} \
             --image-store local \
-            --addr unix:///run/buildkit/buildkitd.sock
+            --addr unix://"$BUILDKIT_DIR"/buildkitd.sock
 
-          sudo kill ${BUILDKIT_PID} || true
+          kill ${BUILDKIT_PID} || true
 
       ##########################################################
       # Verify Patched Image
