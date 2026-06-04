@@ -1,4 +1,4 @@
-、name: Trivy Security Scan & Auto Repair
+name: Trivy Security Scan & Auto Repair
 
 on:
   push:
