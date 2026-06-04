@@ -2,16 +2,17 @@ name: Trivy Security Scan & Auto Repair
 
 on:
   push:
-    branches: [ "main" ]
+    branches:
+      - main
   pull_request:
-    branches: [ "main" ]
+    branches:
+      - main
   schedule:
     - cron: '0 0 * * 1'
 
 permissions:
-  contents: write
+  contents: read
   security-events: write
-  packages: write
 
 env:
   REGISTRY: harbor.xingzhan.cloud:9443
@@ -21,19 +22,16 @@ env:
 
 jobs:
   trivy-scan-and-repair:
-    name: Security Workflow
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      ##########################################################
-      # 1. 初始化并构建本地 Docker 镜像
-      ##########################################################
+      # Build Docker image
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 使用 load: true 将构建好的本地镜像直接加载回当前宿主机的 Docker Daemon 中
       - name: Build local image
         uses: docker/build-push-action@v6
         with:
@@ -46,11 +44,9 @@ jobs:
           docker images
           docker inspect ${IMAGE_NAME}:${IMAGE_TAG}
 
-      ##########################################################
-      # 2. 运行 Trivy 漏洞扫描（双格式输出）
-      ##########################################################
+      # Trivy SARIF
       - name: Run Trivy SARIF Scan
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@0.33.1
         with:
           image-ref: '${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}'
           format: sarif
@@ -63,8 +59,9 @@ jobs:
         with:
           sarif_file: trivy-results.sarif
 
+      # Trivy JSON
       - name: Generate Trivy JSON Report
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@0.33.1
         with:
           image-ref: '${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}'
           format: json
@@ -72,18 +69,35 @@ jobs:
           vuln-type: os
           severity: CRITICAL,HIGH
 
-      ##########################################################
-      # 3. 宿主机就地运行 Copa 修复镜像（已更换为安全的标准化安装组件）
-      ##########################################################
-      # 使用 GitHub 官方推荐的标准化工具下载组件，安全获取指定版本的 copa 二进制文件
-      - name: Install Copa CLI
-        uses: jasonruesch/action-install@v1
-        with:
-          url: https://github.com
-          name: copa
-          bin: copa
+      - name: Verify Trivy Report
+        run: |
+          ls -lh trivy-report.json
+          cat trivy-report.json | head -50
 
-      # 强制利用宿主机原生 Docker 存储驱动进行就地修复，彻底绕过远程仓库
+      # Install Copa
+      - name: Install Copa CLI
+        run: |
+          COPA_VERSION="0.14.0"
+
+          curl -L \
+            -o /tmp/copa.tar.gz \
+            https://github.com/project-copacetic/copacetic/releases/download/v${COPA_VERSION}/copa_${COPA_VERSION}_linux_amd64.tar.gz
+
+          tar -xzf /tmp/copa.tar.gz -C /tmp
+
+          chmod +x /tmp/copa
+
+          sudo mv /tmp/copa /usr/local/bin/copa
+
+          copa version
+
+      # Verify Copa
+      - name: Verify Copa Installation
+        run: |
+          which copa
+          copa version
+
+      # Patch image
       - name: Patch Image Locally
         run: |
           copa patch \
@@ -92,25 +106,22 @@ jobs:
             -t ${{ env.PATCHED_TAG }} \
             --image-store local
 
-      ##########################################################
-      # 4. 对修补后的最终镜像执行二次验证扫描
-      ##########################################################
+      # Verify patched image
       - name: Verify Patched Image
         run: |
           docker images
           docker inspect ${IMAGE_NAME}:${PATCHED_TAG}
 
+      # Re-scan patched image
       - name: Re-Scan Patched Image
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@0.33.1
         with:
           image-ref: '${{ env.IMAGE_NAME }}:${{ env.PATCHED_TAG }}'
           format: table
           vuln-type: os
           severity: CRITICAL,HIGH
 
-      ##########################################################
-      # 5. 推送修补完好、验证通过的镜像至私有 Harbor 仓库
-      ##########################################################
+      # Harbor login
       - name: Login Harbor
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
@@ -119,11 +130,13 @@ jobs:
           username: ${{ secrets.HARBOR_USERNAME }}
           password: ${{ secrets.HARBOR_PASSWORD }}
 
+      # Push final image
       - name: Push Patched Image
         if: github.event_name != 'pull_request'
         run: |
           docker tag \
             ${{ env.IMAGE_NAME }}:${{ env.PATCHED_TAG }} \
-            ${{ env.REGISTRY }}/public/webdev:${{ env.PATCHED_TAG }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+
           docker push \
-            ${{ env.REGISTRY }}/public/webdev:${{ env.PATCHED_TAG }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
