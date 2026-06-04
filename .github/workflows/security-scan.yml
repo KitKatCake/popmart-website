@@ -33,7 +33,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 使用 load: true 将构建好的本地镜像直接加载回当前宿主机的 Docker Daemon 中
       - name: Build local image
         uses: docker/build-push-action@v6
         with:
@@ -44,7 +43,6 @@ jobs:
       ##########################################################
       # 2. 运行 Trivy 漏洞扫描（双格式输出）
       ##########################################################
-      # 格式 A：SARIF 格式，用于同步到 GitHub 代码安全扫描页（Code Scanning Alerts）
       - name: Run Trivy SARIF Scan
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -59,7 +57,6 @@ jobs:
         with:
           sarif_file: trivy-results.sarif
 
-      # 格式 B：JSON 格式，专供本地 Copa 读取并用作修补指令依据
       - name: Generate Trivy JSON Report
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -70,7 +67,7 @@ jobs:
           severity: CRITICAL,HIGH
 
       ##########################################################
-      # 3. 宿主机就地运行 Copa 修复镜像（突破隔离壁垒的关键点）
+      # 3. 宿主机就地运行 Copa 修复镜像
       ##########################################################
       - name: Install Copa & Patch Locally
         run: |
@@ -82,7 +79,6 @@ jobs:
           sudo mv copa /usr/local/bin/
 
           # 2. 使用 --image-store local 直接接管宿主机的本地 Docker 镜像
-          # 此时 Copa 直接与本地 /var/run/docker.sock 交互，绝不触发任何远端仓库的 Auth 鉴权
           copa patch \
             -i ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} \
             -r trivy-report.json \
