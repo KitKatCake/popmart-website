@@ -48,7 +48,7 @@ jobs:
       ##########################################################
 
       - name: Run Trivy SARIF Scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: '${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}'
           format: sarif
@@ -66,7 +66,7 @@ jobs:
       ##########################################################
 
       - name: Generate Trivy JSON Report
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: '${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}'
           format: json
@@ -162,7 +162,7 @@ jobs:
       ##########################################################
 
       - name: Re-Scan Patched Image
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: '${{ env.IMAGE_NAME }}:${{ env.PATCHED_TAG }}'
           format: table
