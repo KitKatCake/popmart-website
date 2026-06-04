@@ -28,25 +28,22 @@ jobs:
         uses: actions/checkout@v4
 
       ##########################################################
-      # Build Docker Image
+      # 1. 启动并配置本地 Docker Buildx 环境
       ##########################################################
-
-      # 修复点 1：必须开启并配置 Docker 守护进程连接
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 修复点 2：将镜像正常构建并加载到本地 Docker 镜像库
+      # 使用官方推荐的 Build Action，显式通过 `load: true` 将镜像导出到宿主机 Docker 守护进程
       - name: Build local image
         uses: docker/build-push-action@v6
         with:
           context: .
-          load: true # 关键：将镜像加载回本地 docker daemon
+          load: true 
           tags: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
 
       ##########################################################
-      # Trivy SARIF Scan (用于 GitHub 安全标签页)
+      # 2. 运行 Trivy SARIF 扫描（用于 GitHub 安全漏洞面板展示）
       ##########################################################
-
       - name: Run Trivy SARIF Scan
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -62,9 +59,8 @@ jobs:
           sarif_file: trivy-results.sarif
 
       ##########################################################
-      # Generate JSON Report For Copa
+      # 3. 运行 Trivy JSON 扫描（专供 Copa 读取的操作码报告）
       ##########################################################
-
       - name: Generate Trivy JSON Report
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -75,11 +71,8 @@ jobs:
           severity: CRITICAL,HIGH
 
       ##########################################################
-      # Run Copa Patch (使用官方 Action 替代手动安装)
+      # 4. 核心修复：使用 Copa 本地驱动修补镜像
       ##########################################################
-
-      # 修复点 3：直接使用 project-copacetic 官方提供的 Action
-      # 它会自动管理 BuildKit 容器和套接字，完全避免权限和路径问题
       - name: Patch Image Using Copa
         uses: project-copacetic/copa-action@v1
         with:
@@ -87,20 +80,17 @@ jobs:
           image-report: trivy-report.json
           patched-tag: ${{ env.PATCHED_TAG }}
           copa-version: 0.8.0
-          buildkit-version: v0.13.2
+          timeout: 5m
+          # ✨ 已移除 buildkit-version，底层将自动匹配调用步骤 1 的 buildx 实例
+          # ✨ 默认使用 openvex 格式，如需要可通过 format 参数微调
 
       ##########################################################
-      # Verify Patched Image
+      # 5. 校验并二次扫描修补后的镜像（确认漏洞是否闭环）
       ##########################################################
-
       - name: Verify Patched Image
         run: |
           docker images
           docker inspect ${{ env.IMAGE_NAME }}:${{ env.PATCHED_TAG }}
-
-      ##########################################################
-      # Re-Scan Patched Image
-      ##########################################################
 
       - name: Re-Scan Patched Image
         uses: aquasecurity/trivy-action@v0.36.0
@@ -111,9 +101,8 @@ jobs:
           severity: CRITICAL,HIGH
 
       ##########################################################
-      # Harbor Login & Push
+      # 6. 推送修补后的成品镜像至私有 Harbor 仓库
       ##########################################################
-
       - name: Login Harbor
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
@@ -130,3 +119,4 @@ jobs:
             ${{ env.REGISTRY }}/public/webdev:${{ env.PATCHED_TAG }}
           docker push \
             ${{ env.REGISTRY }}/public/webdev:${{ env.PATCHED_TAG }}
+            
