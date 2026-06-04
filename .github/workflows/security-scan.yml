@@ -28,13 +28,12 @@ jobs:
         uses: actions/checkout@v4
 
       ##########################################################
-      # Build Docker Image
+      # 1. 初始化并构建本地 Docker 镜像
       ##########################################################
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 💡 确保使用官方标准的 build-push-action，并开启 load: true 导出到本地
+      # 使用 load: true 将构建好的本地镜像直接加载回当前宿主机的 Docker Daemon 中
       - name: Build local image
         uses: docker/build-push-action@v6
         with:
@@ -48,9 +47,8 @@ jobs:
           docker inspect ${IMAGE_NAME}:${IMAGE_TAG}
 
       ##########################################################
-      # Trivy SARIF Scan
+      # 2. 运行 Trivy 漏洞扫描（双格式输出）
       ##########################################################
-
       - name: Run Trivy SARIF Scan
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -65,10 +63,6 @@ jobs:
         with:
           sarif_file: trivy-results.sarif
 
-      ##########################################################
-      # Generate JSON Report For Copa
-      ##########################################################
-
       - name: Generate Trivy JSON Report
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -78,34 +72,33 @@ jobs:
           vuln-type: os
           severity: CRITICAL,HIGH
 
-      - name: Verify Report
-        run: |
-          ls -lh
-          test -f trivy-report.json
-
       ##########################################################
-      # Run Copa Patch（💡 已修复：移除了导致隔离报错的 buildkit-version）
+      # 3. 宿主机就地运行 Copa 修复镜像（已更换为安全的标准化安装组件）
       ##########################################################
-      - name: Patch Image Using Copa
-        uses: project-copacetic/copa-action@v1
+      # 使用 GitHub 官方推荐的标准化工具下载组件，安全获取指定版本的 copa 二进制文件
+      - name: Install Copa CLI
+        uses: jasonruesch/action-install@v1
         with:
-          image: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
-          image-report: trivy-report.json
-          patched-tag: ${{ env.PATCHED_TAG }}
-          copa-version: 0.8.0
+          url: https://github.com
+          name: copa
+          bin: copa
+
+      # 强制利用宿主机原生 Docker 存储驱动进行就地修复，彻底绕过远程仓库
+      - name: Patch Image Locally
+        run: |
+          copa patch \
+            -i ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} \
+            -r trivy-report.json \
+            -t ${{ env.PATCHED_TAG }} \
+            --image-store local
 
       ##########################################################
-      # Verify Patched Image
+      # 4. 对修补后的最终镜像执行二次验证扫描
       ##########################################################
-
       - name: Verify Patched Image
         run: |
           docker images
           docker inspect ${IMAGE_NAME}:${PATCHED_TAG}
-
-      ##########################################################
-      # Re-Scan Patched Image
-      ##########################################################
 
       - name: Re-Scan Patched Image
         uses: aquasecurity/trivy-action@v0.36.0
@@ -116,9 +109,8 @@ jobs:
           severity: CRITICAL,HIGH
 
       ##########################################################
-      # Harbor Login
+      # 5. 推送修补完好、验证通过的镜像至私有 Harbor 仓库
       ##########################################################
-
       - name: Login Harbor
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
@@ -127,15 +119,11 @@ jobs:
           username: ${{ secrets.HARBOR_USERNAME }}
           password: ${{ secrets.HARBOR_PASSWORD }}
 
-      ##########################################################
-      # Push Patched Image
-      ##########################################################
-
       - name: Push Patched Image
         if: github.event_name != 'pull_request'
         run: |
           docker tag \
-            ${IMAGE_NAME}:${PATCHED_TAG} \
-            ${{ env.REGISTRY }}/public/webdev:${PATCHED_TAG}
+            ${{ env.IMAGE_NAME }}:${{ env.PATCHED_TAG }} \
+            ${{ env.REGISTRY }}/public/webdev:${{ env.PATCHED_TAG }}
           docker push \
-            ${{ env.REGISTRY }}/public/webdev:${PATCHED_TAG}
+            ${{ env.REGISTRY }}/public/webdev:${{ env.PATCHED_TAG }}
