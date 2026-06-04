@@ -1,220 +1,192 @@
 name: Trivy Security Scan & Auto Repair
 
 on:
-push:
-branches:
-- main
-
-pull_request:
-branches:
-- main
-
-schedule:
-- cron: '0 0 * * 1'
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  schedule:
+    - cron: '0 0 * * 1'
 
 permissions:
-contents: write
-security-events: write
-packages: write
+  contents: write
+  security-events: write
+  packages: write
 
-jobs:
-trivy-scan-and-repair:
-name: Security Workflow
-runs-on: ubuntu-latest
-
-```
 env:
+  REGISTRY: harbor.xingzhan.cloud:9443
   IMAGE_NAME: popmart-web
   IMAGE_TAG: latest
   PATCHED_TAG: latest-patched
 
-steps:
-  - name: Checkout source
-    uses: actions/checkout@v4
+jobs:
+  trivy-scan-and-repair:
+    name: Security Workflow
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
 
-  ##########################################################
-  # Build Docker Image
-  ##########################################################
+      ##########################################################
+      # Build Docker Image
+      ##########################################################
 
-  - name: Set up Docker Buildx
-    uses: docker/setup-buildx-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-  - name: Build local image
-    run: |
-      docker build \
-        -t ${IMAGE_NAME}:${IMAGE_TAG} \
-        .
+      - name: Build local image
+        run: |
+          docker build -t ${IMAGE_NAME}:${IMAGE_TAG} .
 
-  - name: Verify image exists
-    run: |
-      docker images
-      docker inspect ${IMAGE_NAME}:${IMAGE_TAG}
+      - name: Verify image exists
+        run: |
+          docker images
+          docker inspect ${IMAGE_NAME}:${IMAGE_TAG}
 
-  ##########################################################
-  # Trivy SARIF Scan
-  ##########################################################
+      ##########################################################
+      # Trivy SARIF Scan
+      ##########################################################
 
-  - name: Run Trivy SARIF Scan
-    uses: aquasecurity/trivy-action@0.28.0
-    with:
-      image-ref: '${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}'
-      format: sarif
-      output: trivy-results.sarif
-      severity: CRITICAL,HIGH,MEDIUM
+      - name: Run Trivy SARIF Scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: '${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}'
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH,MEDIUM
 
-  - name: Upload SARIF Report
-    if: always()
-    uses: github/codeql-action/upload-sarif@v3
-    with:
-      sarif_file: trivy-results.sarif
+      - name: Upload SARIF Report
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
 
-  ##########################################################
-  # Generate JSON Report For Copa
-  ##########################################################
+      ##########################################################
+      # Generate JSON Report For Copa
+      ##########################################################
 
-  - name: Generate Trivy JSON Report
-    uses: aquasecurity/trivy-action@0.28.0
-    with:
-      image-ref: '${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}'
-      format: json
-      output: trivy-report.json
-      vuln-type: os
-      severity: CRITICAL,HIGH
+      - name: Generate Trivy JSON Report
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: '${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}'
+          format: json
+          output: trivy-report.json
+          vuln-type: os
+          severity: CRITICAL,HIGH
 
-  - name: Verify Report
-    run: |
-      ls -lh
-      test -f trivy-report.json
+      - name: Verify Report
+        run: |
+          ls -lh
+          test -f trivy-report.json
 
-  ##########################################################
-  # Install Copa
-  ##########################################################
+      ##########################################################
+      # Install Copa
+      ##########################################################
 
-  - name: Install Copa
-    run: |
-      COPA_VERSION="0.8.0"
+      - name: Install Copa
+        run: |
+          COPA_VERSION="0.8.0"
+          curl -L -o copa.tar.gz \
+            "https://github.com/project-copacetic/copacetic/releases/download/v${COPA_VERSION}/copa_${COPA_VERSION}_linux_amd64.tar.gz"
+          tar -xzf copa.tar.gz
+          chmod +x copa
+          sudo mv copa /usr/local/bin/
+          copa version || copa --version
 
-      curl -L \
-        -o copa.tar.gz \
-        https://github.com/project-copacetic/copacetic/releases/download/v${COPA_VERSION}/copa_${COPA_VERSION}_linux_amd64.tar.gz
+      ##########################################################
+      # Install BuildKit
+      ##########################################################
 
-      tar -xzf copa.tar.gz
+      - name: Install BuildKit
+        run: |
+          BUILDKIT_VERSION="0.13.2"
+          curl -L -o buildkit.tar.gz \
+            "https://github.com/moby/buildkit/releases/download/v${BUILDKIT_VERSION}/buildkit-v${BUILDKIT_VERSION}.linux-amd64.tar.gz"
+          tar -xzf buildkit.tar.gz -C /tmp
+          sudo mv /tmp/bin/buildkitd /usr/local/bin/
+          sudo mv /tmp/bin/buildctl /usr/local/bin/
+          buildkitd --version
+          buildctl --version
 
-      chmod +x copa
+      ##########################################################
+      # Run Copa Patch
+      ##########################################################
 
-      sudo mv copa /usr/local/bin/
+      - name: Patch Image Using Copa
+        run: |
+          sudo mkdir -p /run/buildkit
 
-      copa version || copa --version
+          sudo buildkitd \
+            --oci-worker-no-process-sandbox \
+            --addr unix:///run/buildkit/buildkitd.sock \
+            > buildkit.log 2>&1 &
 
-  ##########################################################
-  # Install BuildKit
-  ##########################################################
+          BUILDKIT_PID=$!
+          echo "Waiting for BuildKit..."
 
-  - name: Install BuildKit
-    run: |
-      BUILDKIT_VERSION="0.13.2"
+          for i in {1..60}; do
+            if buildctl \
+              --addr unix:///run/buildkit/buildkitd.sock \
+              debug workers >/dev/null 2>&1; then
+              echo "BuildKit Ready"
+              break
+            fi
+            sleep 1
+          done
 
-      curl -L \
-        -o buildkit.tar.gz \
-        https://github.com/moby/buildkit/releases/download/v${BUILDKIT_VERSION}/buildkit-v${BUILDKIT_VERSION}.linux-amd64.tar.gz
+          buildctl --addr unix:///run/buildkit/buildkitd.sock debug workers
 
-      tar -xzf buildkit.tar.gz -C /tmp
+          copa patch \
+            -i ${IMAGE_NAME}:${IMAGE_TAG} \
+            -r trivy-report.json \
+            -t ${IMAGE_NAME}:${PATCHED_TAG} \
+            --image-store local \
+            --addr unix:///run/buildkit/buildkitd.sock
 
-      sudo mv /tmp/bin/buildkitd /usr/local/bin/
-      sudo mv /tmp/bin/buildctl /usr/local/bin/
+          sudo kill ${BUILDKIT_PID} || true
 
-      buildkitd --version
-      buildctl --version
+      ##########################################################
+      # Verify Patched Image
+      ##########################################################
 
-  ##########################################################
-  # Run Copa Patch
-  ##########################################################
+      - name: Verify Patched Image
+        run: |
+          docker images
+          docker inspect ${IMAGE_NAME}:${PATCHED_TAG}
 
-  - name: Patch Image Using Copa
-    run: |
-      sudo mkdir -p /run/buildkit
+      ##########################################################
+      # Re-Scan Patched Image
+      ##########################################################
 
-      sudo buildkitd \
-        --oci-worker-no-process-sandbox \
-        --addr unix:///run/buildkit/buildkitd.sock \
-        > buildkit.log 2>&1 &
+      - name: Re-Scan Patched Image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: '${{ env.IMAGE_NAME }}:${{ env.PATCHED_TAG }}'
+          format: table
+          vuln-type: os
+          severity: CRITICAL,HIGH
 
-      BUILDKIT_PID=$!
+      ##########################################################
+      # Harbor Login
+      ##########################################################
 
-      echo "Waiting for BuildKit..."
+      - name: Login Harbor
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
 
-      for i in {1..60}; do
+      ##########################################################
+      # Push Patched Image
+      ##########################################################
 
-        if buildctl \
-          --addr unix:///run/buildkit/buildkitd.sock \
-          debug workers >/dev/null 2>&1; then
-
-          echo "BuildKit Ready"
-          break
-        fi
-
-        sleep 1
-      done
-
-      buildctl \
-        --addr unix:///run/buildkit/buildkitd.sock \
-        debug workers
-
-      copa patch \
-        -i ${IMAGE_NAME}:${IMAGE_TAG} \
-        -r trivy-report.json \
-        -t ${IMAGE_NAME}:${PATCHED_TAG} \
-        --image-store local \
-        --addr unix:///run/buildkit/buildkitd.sock
-
-      sudo kill ${BUILDKIT_PID} || true
-
-  ##########################################################
-  # Verify Patched Image
-  ##########################################################
-
-  - name: Verify Patched Image
-    run: |
-      docker images
-
-      docker inspect \
-        ${IMAGE_NAME}:${PATCHED_TAG}
-
-  ##########################################################
-  # Re-Scan Patched Image
-  ##########################################################
-
-  - name: Re-Scan Patched Image
-    uses: aquasecurity/trivy-action@0.28.0
-    with:
-      image-ref: '${{ env.IMAGE_NAME }}:${{ env.PATCHED_TAG }}'
-      format: table
-      vuln-type: os
-      severity: CRITICAL,HIGH
-
-  ##########################################################
-  # Harbor Login
-  ##########################################################
-
-  - name: Login Harbor
-    if: github.event_name != 'pull_request'
-    uses: docker/login-action@v3
-    with:
-      registry: ${{ secrets.HARBOR_REGISTRY }}
-      username: ${{ secrets.HARBOR_USERNAME }}
-      password: ${{ secrets.HARBOR_PASSWORD }}
-
-  ##########################################################
-  # Push Patched Image
-  ##########################################################
-
-  - name: Push Patched Image
-    if: github.event_name != 'pull_request'
-    run: |
-      docker tag \
-        ${IMAGE_NAME}:${PATCHED_TAG} \
-        ${{ secrets.HARBOR_REGISTRY }}/public/webdev:${PATCHED_TAG}
-
-      docker push \
-        ${{ secrets.HARBOR_REGISTRY }}/public/webdev:${PATCHED_TAG}
-```
+      - name: Push Patched Image
+        if: github.event_name != 'pull_request'
+        run: |
+          docker tag \
+            ${IMAGE_NAME}:${PATCHED_TAG} \
+            ${{ env.REGISTRY }}/public/webdev:${PATCHED_TAG}
+          docker push \
+            ${{ env.REGISTRY }}/public/webdev:${PATCHED_TAG}
