@@ -31,20 +31,20 @@ jobs:
       # Build Docker Image
       ##########################################################
 
+      # 修复点 1：必须开启并配置 Docker 守护进程连接
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # 修复点 2：将镜像正常构建并加载到本地 Docker 镜像库
       - name: Build local image
-        run: |
-          docker build -t ${IMAGE_NAME}:${IMAGE_TAG} .
-
-      - name: Verify image exists
-        run: |
-          docker images
-          docker inspect ${IMAGE_NAME}:${IMAGE_TAG}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true # 关键：将镜像加载回本地 docker daemon
+          tags: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
 
       ##########################################################
-      # Trivy SARIF Scan
+      # Trivy SARIF Scan (用于 GitHub 安全标签页)
       ##########################################################
 
       - name: Run Trivy SARIF Scan
@@ -74,79 +74,20 @@ jobs:
           vuln-type: os
           severity: CRITICAL,HIGH
 
-      - name: Verify Report
-        run: |
-          ls -lh
-          test -f trivy-report.json
-
       ##########################################################
-      # Install Copa
+      # Run Copa Patch (使用官方 Action 替代手动安装)
       ##########################################################
 
-      - name: Install Copa
-        run: |
-          COPA_VERSION="0.8.0"
-          curl -L -o copa.tar.gz \
-            "https://github.com/project-copacetic/copacetic/releases/download/v${COPA_VERSION}/copa_${COPA_VERSION}_linux_amd64.tar.gz"
-          tar -xzf copa.tar.gz
-          chmod +x copa
-          sudo mv copa /usr/local/bin/
-          copa version || copa --version
-
-      ##########################################################
-      # Install BuildKit
-      ##########################################################
-
-      - name: Install BuildKit
-        run: |
-          BUILDKIT_VERSION="0.13.2"
-          curl -L -o buildkit.tar.gz \
-            "https://github.com/moby/buildkit/releases/download/v${BUILDKIT_VERSION}/buildkit-v${BUILDKIT_VERSION}.linux-amd64.tar.gz"
-          tar -xzf buildkit.tar.gz -C /tmp
-          sudo mv /tmp/bin/buildkitd /usr/local/bin/
-          sudo mv /tmp/bin/buildctl /usr/local/bin/
-          buildkitd --version
-          buildctl --version
-
-      ##########################################################
-      # Run Copa Patch
-      ##########################################################
-
+      # 修复点 3：直接使用 project-copacetic 官方提供的 Action
+      # 它会自动管理 BuildKit 容器和套接字，完全避免权限和路径问题
       - name: Patch Image Using Copa
-        run: |
-          # 使用当前用户可写的目录
-          export BUILDKIT_DIR="$HOME/buildkit"
-          mkdir -p "$BUILDKIT_DIR"
-
-          # 启动 buildkitd（不使用 sudo，避免 sock 权限问题）
-          buildkitd \
-            --oci-worker-no-process-sandbox \
-            --addr unix://"$BUILDKIT_DIR"/buildkitd.sock \
-            > buildkit.log 2>&1 &
-
-          BUILDKIT_PID=$!
-          echo "Waiting for BuildKit..."
-
-          for i in {1..60}; do
-            if buildctl \
-              --addr unix://"$BUILDKIT_DIR"/buildkitd.sock \
-              debug workers >/dev/null 2>&1; then
-              echo "BuildKit Ready"
-              break
-            fi
-            sleep 1
-          done
-
-          buildctl --addr unix://"$BUILDKIT_DIR"/buildkitd.sock debug workers
-
-          copa patch \
-            -i ${IMAGE_NAME}:${IMAGE_TAG} \
-            -r trivy-report.json \
-            -t ${IMAGE_NAME}:${PATCHED_TAG} \
-            --image-store local \
-            --addr unix://"$BUILDKIT_DIR"/buildkitd.sock
-
-          kill ${BUILDKIT_PID} || true
+        uses: project-copacetic/copa-action@v1
+        with:
+          image: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          image-report: trivy-report.json
+          patched-tag: ${{ env.PATCHED_TAG }}
+          copa-version: 0.8.0
+          buildkit-version: v0.13.2
 
       ##########################################################
       # Verify Patched Image
@@ -155,7 +96,7 @@ jobs:
       - name: Verify Patched Image
         run: |
           docker images
-          docker inspect ${IMAGE_NAME}:${PATCHED_TAG}
+          docker inspect ${{ env.IMAGE_NAME }}:${{ env.PATCHED_TAG }}
 
       ##########################################################
       # Re-Scan Patched Image
@@ -170,7 +111,7 @@ jobs:
           severity: CRITICAL,HIGH
 
       ##########################################################
-      # Harbor Login
+      # Harbor Login & Push
       ##########################################################
 
       - name: Login Harbor
@@ -181,15 +122,11 @@ jobs:
           username: ${{ secrets.HARBOR_USERNAME }}
           password: ${{ secrets.HARBOR_PASSWORD }}
 
-      ##########################################################
-      # Push Patched Image
-      ##########################################################
-
       - name: Push Patched Image
         if: github.event_name != 'pull_request'
         run: |
           docker tag \
-            ${IMAGE_NAME}:${PATCHED_TAG} \
-            ${{ env.REGISTRY }}/public/webdev:${PATCHED_TAG}
+            ${{ env.IMAGE_NAME }}:${{ env.PATCHED_TAG }} \
+            ${{ env.REGISTRY }}/public/webdev:${{ env.PATCHED_TAG }}
           docker push \
-            ${{ env.REGISTRY }}/public/webdev:${PATCHED_TAG}
+            ${{ env.REGISTRY }}/public/webdev:${{ env.PATCHED_TAG }}
