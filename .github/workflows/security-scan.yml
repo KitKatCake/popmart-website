@@ -79,34 +79,32 @@ jobs:
       # -----------------------
       - name: Install Copa CLI
         run: |
-          set -e
-          COPA_VERSION="0.14.0"
+          set -eux
 
+          COPA_VERSION="0.14.0"
           curl -L -o /tmp/copa.tar.gz \
             https://github.com/project-copacetic/copacetic/releases/download/v${COPA_VERSION}/copa_${COPA_VERSION}_linux_amd64.tar.gz
 
-          file /tmp/copa.tar.gz
-
           tar -xzf /tmp/copa.tar.gz -C /tmp
-
           chmod +x /tmp/copa
           sudo mv /tmp/copa /usr/local/bin/copa
 
           which copa
-          copa version
+          echo "=== Copa CLI Installed ==="
+          copa --help
 
       # -----------------------
-      # 5. Patch image (容错)
+      # 5. Patch image using Copa
       # -----------------------
       - name: Patch Image Locally
-        continue-on-error: true
         run: |
-          echo "Start patching image..."
+          set -eux
+          # v0.14 patch 命令参考官方文档
           copa patch \
-            -i ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} \
-            -r trivy-report.json \
-            -t ${{ env.PATCHED_TAG }} \
-            --image-store local || echo "Patch failed, continue CI"
+            --image "${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}" \
+            --report trivy-report.json \
+            --tag "${{ env.PATCHED_TAG }}" \
+            --local
 
       # -----------------------
       # 6. Verify patched image
@@ -114,7 +112,7 @@ jobs:
       - name: Verify Patched Image
         run: |
           docker images
-          docker inspect ${IMAGE_NAME}:${PATCHED_TAG} || echo "Patched image not found, skipping"
+          docker inspect ${IMAGE_NAME}:${PATCHED_TAG}
 
       # -----------------------
       # 7. Re-Scan patched image
@@ -126,7 +124,6 @@ jobs:
           format: table
           vuln-type: os
           severity: CRITICAL,HIGH
-        continue-on-error: true
 
       # -----------------------
       # 8. Login Harbor
@@ -147,7 +144,6 @@ jobs:
         run: |
           docker tag \
             ${{ env.IMAGE_NAME }}:${{ env.PATCHED_TAG }} \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} || echo "Tag failed, skipping push"
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.PATCHED_TAG }}
 
-          docker push \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} || echo "Push failed, skipping"
+          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.PATCHED_TAG }}
