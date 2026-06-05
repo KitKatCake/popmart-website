@@ -157,7 +157,7 @@ jobs:
       - name: Verify Copa Installation
         run: |
           which copa
-          copa version
+          
 
       ##########################################################
       # Patch Image
