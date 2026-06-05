@@ -4,12 +4,15 @@ on:
   push:
     branches:
       - main
+
   pull_request:
     branches:
       - main
+
   workflow_dispatch:
+
   schedule:
-    - cron: '0 0 * * 1'
+    - cron: "0 0 * * 1"
 
 permissions:
   contents: write
@@ -21,18 +24,24 @@ env:
   IMAGE_NAME: public/webdev
   IMAGE_TAG: test
   PATCHED_TAG: test-patched
+  COPA_VERSION: "0.14.1"
 
 jobs:
   trivy-scan-and-repair:
     name: Security Workflow
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout source
+      ####################################################################
+      # Checkout
+      ####################################################################
+
+      - name: Checkout Source
         uses: actions/checkout@v4
 
-      ##########################################################
-      # Harbor Login (needed for push/pull)
-      ##########################################################
+      ####################################################################
+      # Harbor Login
+      ####################################################################
 
       - name: Login Harbor
         uses: docker/login-action@v3
@@ -41,61 +50,77 @@ jobs:
           username: ${{ secrets.HARBOR_USERNAME }}
           password: ${{ secrets.HARBOR_PASSWORD }}
 
-      ##########################################################
-      # Build Docker Image with Harbor Tag
-      ##########################################################
+      ####################################################################
+      # Docker Build
+      ####################################################################
 
-      - name: Set up Docker Buildx
+      - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build local image with Harbor tag
+      - name: Build Local Image
         uses: docker/build-push-action@v6
         with:
           context: .
           load: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
 
-      - name: Verify image exists
+      - name: Verify Built Image
         run: |
-          docker images
-          docker inspect ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          set -euxo pipefail
 
-      ##########################################################
-      # Snyk Scan (Application Layer Dependencies + SAST)
-      ##########################################################
+          docker images
+
+          docker inspect \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}"
+
+      ####################################################################
+      # Snyk
+      ####################################################################
 
       - name: Install Snyk CLI
-        run: npm install -g snyk
+        run: |
+          npm install -g snyk
 
       - name: Snyk Dependency Test
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: snyk test --severity-threshold=high --all-projects --json-file-output=snyk-deps.json
+        run: |
+          snyk test \
+            --severity-threshold=high \
+            --all-projects \
+            --json-file-output=snyk-deps.json
         continue-on-error: true
 
-      - name: Snyk Code Test (SAST)
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: snyk code test --severity-threshold=high --json-file-output=snyk-code.json
-        continue-on-error: true
-
-      - name: Snyk Auto Fix & Commit
+      - name: Snyk Code Test
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: |
-          echo "=== Attempting Snyk auto-fix ==="
+          snyk code test \
+            --severity-threshold=high \
+            --json-file-output=snyk-code.json
+        continue-on-error: true
+
+      - name: Snyk Auto Fix
+        if: github.event_name != 'pull_request'
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          set -euxo pipefail
+
           snyk fix --yes || true
 
           if [ -n "$(git status --porcelain)" ]; then
-            echo "=== Changes detected, committing fixes ==="
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add package.json package-lock.json
-            git commit -m "chore: apply Snyk auto-fixes for npm vulnerabilities [skip ci]"
+
+            git add .
+
+            git commit -m "chore: apply Snyk auto-fixes [skip ci]"
+
             git push
-            echo "=== Fixes committed and pushed ==="
           else
-            echo "=== No auto-fixable changes ==="
+            echo "No auto-fixable changes detected."
           fi
         continue-on-error: true
 
@@ -103,17 +128,18 @@ jobs:
         if: github.event_name != 'pull_request'
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: snyk monitor --all-projects
+        run: |
+          snyk monitor --all-projects
         continue-on-error: true
 
-      ##########################################################
-      # Trivy SARIF Scan
-      ##########################################################
+      ####################################################################
+      # Trivy SARIF
+      ####################################################################
 
       - name: Run Trivy SARIF Scan
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}'
+          image-ref: "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}"
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH,MEDIUM
@@ -124,14 +150,14 @@ jobs:
         with:
           sarif_file: trivy-results.sarif
 
-      ##########################################################
-      # Generate JSON Report For Copa
-      ##########################################################
+      ####################################################################
+      # Trivy JSON For Copa
+      ####################################################################
 
       - name: Generate Trivy JSON Report
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}'
+          image-ref: "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}"
           format: json
           output: trivy-report.json
           vuln-type: os
@@ -139,24 +165,25 @@ jobs:
 
       - name: Verify Trivy Report
         run: |
-          ls -lh trivy-report.json
-          cat trivy-report.json | head -50
+          set -euxo pipefail
 
-      ##########################################################
+          ls -lh trivy-report.json
+
+          jq '.Results | length' trivy-report.json || true
+
+      ####################################################################
       # Install Copa
-      ##########################################################
+      ####################################################################
 
       - name: Install Copa CLI
         run: |
-          COPA_VERSION="0.14.1"
+          set -euxo pipefail
 
-          # Use gh CLI for reliable GitHub release downloads
-          gh release download "v${COPA_VERSION}" \
-            --repo project-copacetic/copacetic \
-            --pattern "copa_${COPA_VERSION}_linux_amd64.tar.gz" \
-            --dir /tmp
+          curl -L \
+            -o /tmp/copa.tar.gz \
+            "https://github.com/project-copacetic/copacetic/releases/download/v${COPA_VERSION}/copa_${COPA_VERSION}_linux_amd64.tar.gz"
 
-          tar -xzf "/tmp/copa_${COPA_VERSION}_linux_amd64.tar.gz" -C /tmp
+          tar -xzf /tmp/copa.tar.gz -C /tmp
 
           chmod +x /tmp/copa
 
@@ -164,53 +191,60 @@ jobs:
 
           copa version
 
-      ##########################################################
-      # Verify Copa
-      ##########################################################
-
       - name: Verify Copa Installation
         run: |
+          set -euxo pipefail
+
           which copa
+
           copa version
 
-      ##########################################################
-      # Patch Image with Copa (local store)
-      ##########################################################
+      ####################################################################
+      # Copa Patch
+      ####################################################################
 
-      - name: Patch Image with Copa
+      - name: Patch Image With Copa
         run: |
-          copa patch \
-            -i ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} \
-            -r trivy-report.json \
-            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.PATCHED_TAG }} \
-            --image-store local
+          set -euxo pipefail
 
-      ##########################################################
+          copa patch \
+            --image "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}" \
+            --report trivy-report.json \
+            --tag "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.PATCHED_TAG }}"
+
+      ####################################################################
       # Verify Patched Image
-      ##########################################################
+      ####################################################################
 
       - name: Verify Patched Image
         run: |
-          docker images
-          docker inspect ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.PATCHED_TAG }}
+          set -euxo pipefail
 
-      ##########################################################
+          docker images
+
+          docker inspect \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.PATCHED_TAG }}"
+
+      ####################################################################
       # Re-Scan Patched Image
-      ##########################################################
+      ####################################################################
 
       - name: Re-Scan Patched Image
         uses: aquasecurity/trivy-action@v0.36.0
         with:
-          image-ref: '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.PATCHED_TAG }}'
+          image-ref: "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.PATCHED_TAG }}"
           format: table
           vuln-type: os
           severity: CRITICAL,HIGH
 
-      ##########################################################
-      # Push Patched Image to Harbor
-      ##########################################################
+      ####################################################################
+      # Push Patched Image
+      ####################################################################
 
-      - name: Push Patched Image
+      - name: Push Patched Image To Harbor
         if: github.event_name != 'pull_request'
         run: |
-          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.PATCHED_TAG }}
+          set -euxo pipefail
+
+          docker push \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.PATCHED_TAG }}"
