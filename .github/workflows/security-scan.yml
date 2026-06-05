@@ -55,20 +55,21 @@ jobs:
       - name: Install Snyk CLI
         run: npm install -g snyk
 
-      - name: Snyk Auth
+      - name: Snyk Dependency Test
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: snyk auth $SNYK_TOKEN
-
-      - name: Snyk Dependency Test
         run: snyk test --severity-threshold=high --all-projects --json-file-output=snyk-deps.json
         continue-on-error: true
 
       - name: Snyk Code Test (SAST)
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: snyk code test --severity-threshold=high --json-file-output=snyk-code.json
         continue-on-error: true
 
       - name: Snyk Auto Fix & Commit
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: |
           echo "=== Attempting Snyk auto-fix ==="
           snyk fix --yes || true
@@ -88,6 +89,8 @@ jobs:
 
       - name: Snyk Monitor
         if: github.event_name != 'pull_request'
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: snyk monitor --all-projects
         continue-on-error: true
 
