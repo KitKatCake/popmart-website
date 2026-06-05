@@ -148,7 +148,7 @@ jobs:
 
       - name: Install Copa CLI
         run: |
-          COPA_VERSION="0.14.0"
+          COPA_VERSION="0.14.1"
 
           curl -L \
             -o /tmp/copa.tar.gz \
