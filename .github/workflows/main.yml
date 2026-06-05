@@ -34,12 +34,9 @@ jobs:
       - name: Install Snyk CLI
         run: npm install -g snyk
 
-      - name: Snyk Auth
+      - name: Snyk Dependency Test (Build Gate)
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: snyk auth $SNYK_TOKEN
-
-      - name: Snyk Dependency Test (Build Gate)
         run: snyk test --severity-threshold=high --all-projects
 
       # =========================================================
