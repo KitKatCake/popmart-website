@@ -150,11 +150,13 @@ jobs:
         run: |
           COPA_VERSION="0.14.1"
 
-          curl -L \
-            -o /tmp/copa.tar.gz \
-            https://github.com/project-copacetic/copacetic/releases/download/v${COPA_VERSION}/copa_${COPA_VERSION}_linux_amd64.tar.gz
+          # Use gh CLI for reliable GitHub release downloads
+          gh release download "v${COPA_VERSION}" \
+            --repo project-copacetic/copacetic \
+            --pattern "copa_${COPA_VERSION}_linux_amd64.tar.gz" \
+            --dir /tmp
 
-          tar -xzf /tmp/copa.tar.gz -C /tmp
+          tar -xzf "/tmp/copa_${COPA_VERSION}_linux_amd64.tar.gz" -C /tmp
 
           chmod +x /tmp/copa
 
