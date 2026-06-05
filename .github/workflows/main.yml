@@ -28,6 +28,21 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       # =========================================================
+      # Snyk Dependency Scan (Build Gate)
+      # 在构建前拦截应用层（npm）高危/严重漏洞
+      # =========================================================
+      - name: Install Snyk CLI
+        run: npm install -g snyk
+
+      - name: Snyk Auth
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: snyk auth $SNYK_TOKEN
+
+      - name: Snyk Dependency Test (Build Gate)
+        run: snyk test --severity-threshold=high --all-projects
+
+      # =========================================================
       # PR 时：只构建，不登录，不推送（验证构建是否通过）
       # Push 到 main 时：登录 + 构建 + 推送
       # =========================================================
