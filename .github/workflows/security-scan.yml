@@ -189,7 +189,7 @@ jobs:
 
           sudo mv /tmp/copa /usr/local/bin/copa
 
-          copa version
+          
 
       - name: Verify Copa Installation
         run: |
@@ -197,7 +197,7 @@ jobs:
 
           which copa
 
-          copa version
+         
 
       ####################################################################
       # Copa Patch
