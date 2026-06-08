@@ -81,7 +81,7 @@ jobs:
       # =========================================================
       - name: Deploy to Alibaba Cloud ECS
         if: github.event_name == 'push'
-        uses: appleboy/ssh-action@v1.0.3
+        uses: appleboy/ssh-action@v1.2.5
         with:
           host: 120.26.23.109
           username: root
