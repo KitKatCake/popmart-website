@@ -1,0 +1,110 @@
+name: Docker Build and Push
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  REGISTRY: harbor.xingzhan.cloud:9443
+  IMAGE_NAME: public/webdev
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # =========================================================
+      # Snyk Dependency Scan (Build Gate)
+      # 在构建前拦截应用层（npm）高危/严重漏洞
+      # =========================================================
+      - name: Install Snyk CLI
+        run: npm install -g snyk
+
+      - name: Snyk Dependency Test (Build Gate)
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: snyk test --severity-threshold=high --all-projects
+
+      # =========================================================
+      # PR 时：只构建，不登录，不推送（验证构建是否通过）
+      # Push 到 main 时：登录 + 构建 + 推送
+      # =========================================================
+      - name: Log in to Harbor Registry
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.HARBOR_USERNAME }}
+          password: ${{ secrets.HARBOR_PASSWORD }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix={{branch}}-
+            type=raw,value=test
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:test
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+
+      - name: Image digest
+        if: github.event_name == 'push'
+        run: echo "Image pushed to ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:test"
+
+      # =========================================================
+      # 步骤 5：远程部署到阿里云 ECS
+      # =========================================================
+      - name: Deploy to Alibaba Cloud ECS
+        if: github.event_name == 'push'
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 120.26.23.109
+          username: root
+          password: ${{ secrets.ECS_SSH_PASSWORD }}
+          port: 22
+          script: |
+            echo "=== Docker login to Harbor ==="
+            echo "${{ secrets.HARBOR_PASSWORD }}" | docker login ${{ env.REGISTRY }} -u ${{ secrets.HARBOR_USERNAME }} --password-stdin
+
+            echo "=== Pull latest image ==="
+            docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:test
+
+            echo "=== Stop and remove old container ==="
+            docker stop popmart-web 2>/dev/null || true
+            docker rm popmart-web 2>/dev/null || true
+
+            echo "=== Run new container ==="
+            docker run -d \
+              --name popmart-web \
+              -p 80:3000 \
+              --restart always \
+              ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:test
+
+            echo "=== Verify deployment ==="
+            docker ps | grep popmart-web
+            echo "Deployment completed successfully!"
