@@ -11,7 +11,9 @@ on:
 
 env:
   REGISTRY: harbor.xingzhan.cloud:9443
-  IMAGE_NAME: public/webdev
+  IMAGE_NAME: public/popmart-website
+  CONTAINER_NAME: popmart-web
+  ECS_HOST: ${{ secrets.ECS_HOST }}
 
 jobs:
   build-and-push:
@@ -59,14 +61,14 @@ jobs:
           tags: |
             type=ref,event=branch
             type=sha,prefix={{branch}}-
-            type=raw,value=test
+            type=raw,value=dev
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: ${{ github.event_name == 'push' }}
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:test
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:dev
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -74,37 +76,50 @@ jobs:
 
       - name: Image digest
         if: github.event_name == 'push'
-        run: echo "Image pushed to ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:test"
+        run: echo "Image pushed to ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:dev"
 
       # =========================================================
       # 步骤 5：远程部署到阿里云 ECS
       # =========================================================
       - name: Deploy to Alibaba Cloud ECS
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && env.ECS_HOST != ''
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: 120.26.23.109
+          host: ${{ env.ECS_HOST }}
           username: root
           password: ${{ secrets.ECS_SSH_PASSWORD }}
           port: 22
-          script: |
-            echo "=== Docker login to Harbor ==="
-            echo "${{ secrets.HARBOR_PASSWORD }}" | docker login ${{ env.REGISTRY }} -u ${{ secrets.HARBOR_USERNAME }} --password-stdin
+        env:
+          HARBOR_REGISTRY: ${{ env.REGISTRY }}
+          HARBOR_USERNAME: ${{ secrets.HARBOR_USERNAME }}
+          HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
+          IMAGE_FULL: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:dev
+          CONTAINER_NAME: ${{ env.CONTAINER_NAME }}
+        script: |
+          set -euo pipefail
 
-            echo "=== Pull latest image ==="
-            docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:test
+          if [ -z "${HARBOR_PASSWORD:-}" ] || [ -z "${HARBOR_USERNAME:-}" ]; then
+            echo "::error::HARBOR_USERNAME or HARBOR_PASSWORD secret is empty."
+            exit 1
+          fi
 
-            echo "=== Stop and remove old container ==="
-            docker stop popmart-web 2>/dev/null || true
-            docker rm popmart-web 2>/dev/null || true
+          echo "=== Docker login to Harbor ==="
+          printf '%s' "${HARBOR_PASSWORD}" | docker login "${HARBOR_REGISTRY}" -u "${HARBOR_USERNAME}" --password-stdin
 
-            echo "=== Run new container ==="
-            docker run -d \
-              --name popmart-web \
-              -p 80:3000 \
-              --restart always \
-              ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:test
+          echo "=== Pull latest :dev image ==="
+          docker pull "${IMAGE_FULL}"
 
-            echo "=== Verify deployment ==="
-            docker ps | grep popmart-web
-            echo "Deployment completed successfully!"
+          echo "=== Stop and remove old container ==="
+          docker stop "${CONTAINER_NAME}" 2>/dev/null || true
+          docker rm   "${CONTAINER_NAME}" 2>/dev/null || true
+
+          echo "=== Run new container (host:3000 -> container:3000) ==="
+          docker run -d \
+            --name "${CONTAINER_NAME}" \
+            -p 3000:3000 \
+            --restart always \
+            "${IMAGE_FULL}"
+
+          echo "=== Verify deployment ==="
+          docker ps | grep "${CONTAINER_NAME}"
+          echo "Deployment completed successfully!"

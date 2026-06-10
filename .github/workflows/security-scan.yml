@@ -21,9 +21,9 @@ permissions:
 
 env:
   REGISTRY: harbor.xingzhan.cloud:9443
-  IMAGE_NAME: public/webdev
-  IMAGE_TAG: test
-  PATCHED_TAG: test-patched
+  IMAGE_NAME: public/popmart-website
+  IMAGE_TAG: dev
+  PATCHED_TAG: dev-patched
   COPA_VERSION: "0.14.1"
 
 jobs:
@@ -189,15 +189,11 @@ jobs:
 
           sudo mv /tmp/copa /usr/local/bin/copa
 
-          
-
       - name: Verify Copa Installation
         run: |
           set -euxo pipefail
 
           which copa
-
-         
 
       ####################################################################
       # Copa Patch
